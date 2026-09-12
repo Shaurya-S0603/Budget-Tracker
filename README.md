@@ -64,30 +64,6 @@ streamlit run app.py
 ./run.sh
 ```
 
-## Data
-
-The first run imports the bundled `NTU Monthly budget.xlsx` into `data/expenses.db` (SQLite). After that, weekly updates are stored locally in SQLite.
-
-The source workbook's starting expense rows have blank dates. The app preserves them as **legacy / undated** expenses and includes them in the current starting budget instead of inventing dates.
-
-### Starting values from the workbook
-
-The workbook originally allocates S$1,000 across categories, but S$200 of that is the Emergency Fund reserve. The tracker therefore uses only the remaining S$800 as the spending budget.
-
-- Spendable monthly budget: **S$800.00**
-- Emergency Fund reserve: **S$200.00**
-- Recorded starting expenses: **S$430.90**
-- Remaining spendable budget: **S$369.10**
-
-Spendable category budgets:
-
-- Food: S$570
-- Personal: S$100
-- Transportation: S$30
-- Mobile and Services: S$55
-- Air Con: S$45
-
-These add up to **S$800**. The Emergency Fund is intentionally kept outside the expense tracker.
 
 ## Reset to the workbook
 
