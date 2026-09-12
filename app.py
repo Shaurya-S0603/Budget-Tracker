@@ -117,8 +117,7 @@ fund = fund_status(total_spent)
 if page == "Dashboard":
     st.title("Expense Dashboard")
     st.caption(
-        "The first S$800 comes from the main fund. Any excess is automatically "
-        "covered by the S$200 Emergency Fund."
+        ""
     )
 
     days_total, elapsed_days, remaining_days = month_days()
