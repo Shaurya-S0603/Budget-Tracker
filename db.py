@@ -14,18 +14,26 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "expenses.db"
 DEFAULT_WORKBOOK = DATA_DIR / "NTU Monthly budget.xlsx"
 
+# S$800 is the actual monthly spending budget. Emergency Fund is reserved
+# separately and must never be treated as spendable money or an expense.
 DEFAULT_BUDGETS = {
     "Food": 570.0,
     "Personal": 100.0,
     "Transportation": 30.0,
     "Mobile and Services": 55.0,
     "Air Con": 45.0,
-    "Emergency Fund": 200.0,
 }
 
+RESERVED_CATEGORIES = {"Emergency Fund"}
+RESERVED_CATEGORY_KEYS = {category.casefold() for category in RESERVED_CATEGORIES}
+
 ESSENTIAL_DEFAULTS = {
-    "Food", "Transportation", "Mobile and Services", "Air Con", "Emergency Fund"
+    "Food", "Transportation", "Mobile and Services", "Air Con"
 }
+
+
+def _is_reserved_category(category: object) -> bool:
+    return str(category).strip().casefold() in RESERVED_CATEGORY_KEYS
 
 
 def _connect() -> sqlite3.Connection:
@@ -79,6 +87,11 @@ def init_db() -> None:
             """
         )
 
+        # Emergency Fund used to be stored like a normal budget/expense.
+        # Remove it during startup so existing local databases migrate cleanly.
+        conn.execute("DELETE FROM expenses WHERE lower(trim(category)) = 'emergency fund'")
+        conn.execute("DELETE FROM budgets WHERE lower(trim(category)) = 'emergency fund'")
+
     if not get_budgets():
         replace_budgets(DEFAULT_BUDGETS)
 
@@ -88,7 +101,11 @@ def init_db() -> None:
 
 def count_expenses() -> int:
     with _connect() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0])
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM expenses WHERE lower(trim(category)) != 'emergency fund'"
+            ).fetchone()[0]
+        )
 
 
 def get_expenses() -> pd.DataFrame:
@@ -99,6 +116,7 @@ def get_expenses() -> pd.DataFrame:
                    payment_method, is_essential, source, entry_mode,
                    period_key, created_at
             FROM expenses
+            WHERE lower(trim(category)) != 'emergency fund'
             ORDER BY
               CASE WHEN expense_date IS NULL OR expense_date = '' THEN 1 ELSE 0 END,
               expense_date DESC,
@@ -129,12 +147,13 @@ def upsert_weekly_expenses(week_ending: date, amounts: dict[str, float]) -> dict
 
     Re-submitting the same week is safe: existing weekly rows for that period are
     removed and replaced, so corrections never double-count spending.
+    Reserved categories such as Emergency Fund are ignored.
     """
     period_key = week_period_key(week_ending)
     cleaned = {
         str(category).strip(): max(float(amount or 0), 0.0)
         for category, amount in amounts.items()
-        if str(category).strip()
+        if str(category).strip() and not _is_reserved_category(category)
     }
 
     with _connect() as conn:
@@ -176,7 +195,9 @@ def get_weekly_totals() -> pd.DataFrame:
             SELECT period_key, MAX(expense_date) AS week_ending,
                    SUM(amount) AS total_spent, COUNT(*) AS categories_recorded
             FROM expenses
-            WHERE entry_mode = 'weekly' AND period_key IS NOT NULL
+            WHERE entry_mode = 'weekly'
+              AND period_key IS NOT NULL
+              AND lower(trim(category)) != 'emergency fund'
             GROUP BY period_key
             ORDER BY period_key DESC
             """,
@@ -204,7 +225,12 @@ def delete_expenses(ids: Iterable[int]) -> None:
 def get_budgets() -> dict[str, float]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT category, monthly_budget FROM budgets ORDER BY category"
+            """
+            SELECT category, monthly_budget
+            FROM budgets
+            WHERE lower(trim(category)) != 'emergency fund'
+            ORDER BY category
+            """
         ).fetchall()
     return {str(r["category"]): float(r["monthly_budget"]) for r in rows}
 
@@ -214,11 +240,23 @@ def replace_budgets(budgets: dict[str, float]) -> None:
         conn.execute("DELETE FROM budgets")
         conn.executemany(
             "INSERT INTO budgets(category, monthly_budget) VALUES (?, ?)",
-            [(str(k).strip(), max(float(v), 0.0)) for k, v in budgets.items() if str(k).strip()],
+            [
+                (str(k).strip(), max(float(v), 0.0))
+                for k, v in budgets.items()
+                if str(k).strip() and not _is_reserved_category(k)
+            ],
         )
 
 
 def upsert_budget(category: str, monthly_budget: float) -> None:
+    category = category.strip()
+    if _is_reserved_category(category):
+        # Keep Emergency Fund outside the spending budget even if an old client
+        # or imported value tries to add it back.
+        with _connect() as conn:
+            conn.execute("DELETE FROM budgets WHERE lower(trim(category)) = 'emergency fund'")
+        return
+
     with _connect() as conn:
         conn.execute(
             """
@@ -226,7 +264,7 @@ def upsert_budget(category: str, monthly_budget: float) -> None:
             VALUES (?, ?)
             ON CONFLICT(category) DO UPDATE SET monthly_budget = excluded.monthly_budget
             """,
-            (category.strip(), max(float(monthly_budget), 0.0)),
+            (category, max(float(monthly_budget), 0.0)),
         )
 
 
@@ -236,13 +274,18 @@ def delete_budget(category: str) -> None:
 
 
 def import_workbook(path: str | Path, replace: bool = False) -> dict:
-    """Import the provided workbook's expense table and category budgets."""
+    """Import the provided workbook's spendable expense table and budgets.
+
+    Emergency Fund is deliberately excluded because it is reserved savings,
+    not part of the S$800 monthly spending budget.
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
 
     raw_tx = pd.read_excel(path, sheet_name="Transactions", header=None)
     rows = []
+    reserved_rows_skipped = 0
     for _, row in raw_tx.iterrows():
         if len(row) < 5:
             continue
@@ -252,6 +295,9 @@ def import_workbook(path: str | Path, replace: bool = False) -> dict:
             continue
         category = str(category).strip()
         if not category or category.lower() == "category":
+            continue
+        if _is_reserved_category(category):
+            reserved_rows_skipped += 1
             continue
         parsed_date = pd.to_datetime(row.iloc[1], errors="coerce")
         expense_date = None if pd.isna(parsed_date) else parsed_date.date()
@@ -277,6 +323,8 @@ def import_workbook(path: str | Path, replace: bool = False) -> dict:
     with _connect() as conn:
         if replace:
             conn.execute("DELETE FROM expenses")
+        else:
+            conn.execute("DELETE FROM expenses WHERE lower(trim(category)) = 'emergency fund'")
         for expense_date, amount, description, category in rows:
             conn.execute(
                 """
@@ -301,6 +349,7 @@ def import_workbook(path: str | Path, replace: bool = False) -> dict:
         "expenses_imported": len(rows),
         "budget_categories_imported": len(budgets),
         "undated_expenses": sum(1 for r in rows if r[0] is None),
+        "reserved_rows_skipped": reserved_rows_skipped,
     }
 
 
