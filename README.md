@@ -15,6 +15,21 @@ You do **not** need to enter every purchase separately.
 
 If you save the same week again, the app replaces that week's previous totals instead of double-counting them. Categories left at S$0 are simply not stored for that week.
 
+## Monthly money structure
+
+The tracker treats **S$800 per month as the actual spendable budget**.
+
+The separate **S$200 Emergency Fund is a reserve**, not an expense category and not spendable monthly money. It is excluded from:
+
+- expense totals
+- budget utilization
+- weekly entry
+- charts and insights
+- safe-to-spend calculations
+- workbook imports
+
+Existing local databases are automatically cleaned on startup so any old `Emergency Fund` budget or expense rows are removed from tracking.
+
 ## What it tracks
 
 - Weekly spending by category
@@ -57,19 +72,23 @@ The source workbook's starting expense rows have blank dates. The app preserves 
 
 ### Starting values from the workbook
 
-- Monthly budget: **S$1,000.00**
-- Recorded starting expenses: **S$430.90**
-- Remaining budget: **S$569.10**
+The workbook originally allocates S$1,000 across categories, but S$200 of that is the Emergency Fund reserve. The tracker therefore uses only the remaining S$800 as the spending budget.
 
-Category budgets:
+- Spendable monthly budget: **S$800.00**
+- Emergency Fund reserve: **S$200.00**
+- Recorded starting expenses: **S$430.90**
+- Remaining spendable budget: **S$369.10**
+
+Spendable category budgets:
 
 - Food: S$570
 - Personal: S$100
 - Transportation: S$30
 - Mobile and Services: S$55
 - Air Con: S$45
-- Emergency Fund: S$200
+
+These add up to **S$800**. The Emergency Fund is intentionally kept outside the expense tracker.
 
 ## Reset to the workbook
 
-Delete `data/expenses.db` and restart the app. It will seed itself from the included workbook again.
+Delete `data/expenses.db` and restart the app. It will seed itself from the included workbook again, automatically excluding the Emergency Fund from spending data and budgets.
