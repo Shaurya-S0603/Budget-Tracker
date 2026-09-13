@@ -33,12 +33,13 @@ Emergency Fund is a reserve, not an expense category.
 
 The tracker uses one local SQLite database at `data/expenses.db`, then synchronizes that file with GitHub:
 
-- On app startup, the latest database file is downloaded from GitHub before SQLite opens.
-- After every successful database write, the complete SQLite file is uploaded back to GitHub.
-- If the remote file does not exist yet, the first successful write creates it.
+- Streamlit deploys the app from `main`.
+- Persistent budget data is stored on the separate `budget-data` branch so saving an expense does **not** trigger a Streamlit redeployment.
+- On app startup, the latest database file is downloaded from `budget-data` before SQLite opens.
+- After every successful database write, the complete SQLite file is uploaded back to `budget-data`.
 - Re-uploading an unchanged file does not create another commit.
-- If an upload fails after a local transaction commits, the local data is kept and the app reports a **GitHub autosave issue** instead of pretending the database write failed.
-- A conflicting remote update is not silently overwritten.
+- SQLite connections are serialized and short-lived to reduce lock/stale-connection problems in Streamlit sessions.
+- If an upload fails after a local transaction commits, the local data is kept and the app reports a **GitHub autosave issue**.
 
 This is intentionally simple for a single-user tracker. GitHub is not a high-write transactional database, so this design is appropriate for weekly/manual updates, not rapid multi-user writes.
 
@@ -50,11 +51,13 @@ Create a **fine-grained GitHub personal access token** with **Contents: Read and
 [github]
 token = "github_pat_REPLACE_ME"
 repo = "Shaurya-S0603/Budget-Tracker"
-branch = "main"
+branch = "budget-data"
 db_path = "data/expenses.db"
 ```
 
 A template is included at `.streamlit/secrets.toml.example`. Never commit the real token.
+
+If an older Streamlit secret still says `branch = "main"`, this repository automatically maps that setting to `budget-data` for backward compatibility. Updating the secret to `budget-data` is still recommended for clarity.
 
 You can also configure the same values through environment variables:
 
@@ -65,11 +68,9 @@ BUDGET_TRACKER_GITHUB_BRANCH
 BUDGET_TRACKER_GITHUB_DB_PATH
 ```
 
-`GITHUB_TOKEN` is accepted as a fallback token as well.
-
 ### Privacy warning
 
-**This repository is currently public. A SQLite database committed to this repository can expose your spending data to anyone who can view the repository.** Before enabling autosave with real personal data, either make the repository private or point `[github].repo` to a private repository dedicated to the database.
+The SQLite database contains spending data. Keep the repository private, or point `[github].repo` to a private repository dedicated to the database.
 
 The code does not store the GitHub token inside the SQLite file or the repository.
 

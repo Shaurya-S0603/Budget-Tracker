@@ -17,14 +17,18 @@ from requests import Response
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_GITHUB_REPO = "Shaurya-S0603/Budget-Tracker"
-DEFAULT_GITHUB_BRANCH = "main"
+# Keep database commits away from the branch Streamlit deploys from. Updating
+# main for every expense save makes Streamlit redeploy the app mid-session.
+DEFAULT_GITHUB_BRANCH = "budget-data"
 DEFAULT_GITHUB_DB_PATH = "data/expenses.db"
 GITHUB_API = "https://api.github.com"
 
 _SYNC_LOCK = RLock()
+_DB_LOCK = RLock()
 _remote_loaded = False
 _last_sync_error = ""
 
@@ -95,6 +99,12 @@ def github_config() -> dict[str, str | bool]:
     branch = str(branch).strip()
     db_path = str(db_path).strip().lstrip("/")
 
+    # Earlier setup instructions used branch="main". For this repository,
+    # transparently migrate that old setting to the dedicated data branch so an
+    # existing Streamlit secret does not keep triggering deployments on saves.
+    if repo == DEFAULT_GITHUB_REPO and branch == "main":
+        branch = DEFAULT_GITHUB_BRANCH
+
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise StorageError("GitHub autosave repo must use the owner/repository format.")
     if not branch:
@@ -153,13 +163,7 @@ def _safe_request(
 
 
 def _read_remote_file(config: dict[str, str | bool]) -> tuple[str | None, bytes | None]:
-    """Read the saved DB, tolerating a rejected token for public repositories.
-
-    A malformed/expired token can make an otherwise public GitHub file request
-    return 401/403. In that case retry the read without authentication. Writes
-    still require the configured token, so a bad token will be surfaced when a
-    save is attempted instead of blanking the whole Streamlit app on startup.
-    """
+    """Read the saved DB, tolerating a rejected token for public repositories."""
     response = _safe_request(
         "GET",
         config,
@@ -309,6 +313,7 @@ def _engine(local_path: str) -> Engine:
     return create_engine(
         "sqlite:///" + str(path),
         connect_args={"check_same_thread": False, "timeout": 30},
+        poolclass=NullPool,
         pool_pre_ping=True,
         hide_parameters=True,
     )
@@ -340,22 +345,25 @@ def storage_status() -> dict[str, str | bool]:
 
 @contextmanager
 def connect(*, write: bool = False):
-    """Run one SQLite transaction; successful writes are then autosaved to GitHub."""
+    """Run one serialized SQLite transaction, then autosave committed writes."""
     global _last_sync_error
     try:
         engine = get_engine()
-        with engine.connect() as conn:
-            with conn.begin():
-                if write:
-                    conn.exec_driver_sql("BEGIN IMMEDIATE")
+        with _DB_LOCK:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("BEGIN IMMEDIATE" if write else "BEGIN")
+                try:
+                    yield conn
+                except Exception:
+                    conn.rollback()
+                    raise
                 else:
-                    conn.exec_driver_sql("BEGIN")
-                yield conn
+                    conn.commit()
     except StorageError:
         raise
     except SQLAlchemyError:
         raise StorageError(
-            "The database operation could not be completed. Reload and check your saved data before retrying."
+            "The local budget database is busy or unavailable. Reload once and retry the save."
         ) from None
 
     if write:

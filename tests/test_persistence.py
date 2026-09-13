@@ -189,7 +189,7 @@ def test_github_upload_creates_remote_database(database, monkeypatch):
         if method == "PUT":
             content = base64.b64decode(kwargs["json"]["content"])
             assert content.startswith(b"SQLite format 3\x00")
-            assert kwargs["json"]["branch"] == "main"
+            assert kwargs["json"]["branch"] == "budget-data"
             return FakeResponse(201, {"content": {"sha": "new"}})
         raise AssertionError(method)
 
@@ -274,6 +274,23 @@ def test_streamlit_secret_selection_and_invalid_configuration(monkeypatch):
     assert config["repo"] == "owner/repo"
     assert config["branch"] == "budget-data"
     assert config["db_path"] == "state/expenses.db"
+
+    # Backward compatibility: our earlier setup instructions told Streamlit to
+    # use main. For the Budget Tracker repo that now maps to budget-data so a
+    # save cannot trigger a redeployment loop.
+    monkeypatch.setattr(
+        st,
+        "secrets",
+        {
+            "github": {
+                "token": "secret-token",
+                "repo": "Shaurya-S0603/Budget-Tracker",
+                "branch": "main",
+                "db_path": "data/expenses.db",
+            }
+        },
+    )
+    assert storage.github_config()["branch"] == "budget-data"
 
     monkeypatch.setenv("BUDGET_TRACKER_GITHUB_REPO", "not valid")
     with pytest.raises(storage.StorageError):
