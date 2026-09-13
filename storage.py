@@ -65,9 +65,12 @@ def _streamlit_github_secrets() -> dict[str, str]:
 def github_config() -> dict[str, str | bool]:
     """Return GitHub autosave configuration without exposing the token."""
     secrets = _streamlit_github_secrets()
+
+    # Use only an app-specific environment variable or the explicit Streamlit
+    # secret. A generic GITHUB_TOKEN may be injected by CI/hosting and may point
+    # at a different identity with no access to this repository.
     token = (
         os.environ.get("BUDGET_TRACKER_GITHUB_TOKEN")
-        or os.environ.get("GITHUB_TOKEN")
         or secrets.get("token", "")
     )
     token = str(token or "").strip()
@@ -115,35 +118,68 @@ def _github_url(config: dict[str, str | bool]) -> str:
     return f"{GITHUB_API}/repos/{repo}/contents/{path}"
 
 
-def _github_headers(config: dict[str, str | bool]) -> dict[str, str]:
-    return {
+def _github_headers(
+    config: dict[str, str | bool], *, authenticated: bool = True
+) -> dict[str, str]:
+    headers = {
         "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {config['token']}",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "budget-tracker-autosave",
     }
+    if authenticated and config.get("token"):
+        headers["Authorization"] = f"Bearer {config['token']}"
+    return headers
 
 
-def _safe_request(method: str, config: dict[str, str | bool], **kwargs) -> Response:
+def _safe_request(
+    method: str,
+    config: dict[str, str | bool],
+    *,
+    authenticated: bool = True,
+    **kwargs,
+) -> Response:
     try:
         return requests.request(
             method,
             _github_url(config),
-            headers=_github_headers(config),
+            headers=_github_headers(config, authenticated=authenticated),
             timeout=15,
             **kwargs,
         )
     except requests.RequestException:
-        raise StorageError("GitHub autosave could not reach GitHub. Local data is still available.") from None
+        raise StorageError(
+            "GitHub autosave could not reach GitHub. Local data is still available."
+        ) from None
 
 
 def _read_remote_file(config: dict[str, str | bool]) -> tuple[str | None, bytes | None]:
-    response = _safe_request("GET", config, params={"ref": config["branch"]})
+    """Read the saved DB, tolerating a rejected token for public repositories.
+
+    A malformed/expired token can make an otherwise public GitHub file request
+    return 401/403. In that case retry the read without authentication. Writes
+    still require the configured token, so a bad token will be surfaced when a
+    save is attempted instead of blanking the whole Streamlit app on startup.
+    """
+    response = _safe_request(
+        "GET",
+        config,
+        authenticated=True,
+        params={"ref": config["branch"]},
+    )
+
+    if response.status_code in {401, 403}:
+        response = _safe_request(
+            "GET",
+            config,
+            authenticated=False,
+            params={"ref": config["branch"]},
+        )
+
     if response.status_code == 404:
         return None, None
     if response.status_code != 200:
         raise StorageError(
-            "GitHub autosave could not read the database file. Check the token, repo and branch permissions."
+            "GitHub autosave could not read the database file. Check the [github] token, repo and branch in Streamlit Secrets."
         )
 
     try:
@@ -238,8 +274,17 @@ def sync_to_github() -> bool:
         if remote_sha:
             body["sha"] = remote_sha
 
-        response = _safe_request("PUT", config, json=body)
+        response = _safe_request(
+            "PUT",
+            config,
+            authenticated=True,
+            json=body,
+        )
         if response.status_code not in {200, 201}:
+            if response.status_code in {401, 403}:
+                raise StorageError(
+                    "GitHub autosave cannot write to the repository. Replace the [github] token in Streamlit Secrets with a fine-grained token that has Contents read/write access to this repo."
+                )
             if response.status_code in {409, 422}:
                 raise StorageError(
                     "GitHub autosave hit a concurrent update. Your data is saved locally; reload before editing again."
