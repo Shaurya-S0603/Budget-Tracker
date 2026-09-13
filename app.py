@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
+from io import BytesIO
 
 import pandas as pd
 import plotly.express as px
@@ -13,6 +13,7 @@ from db import (
     current_cycle_expenses,
     delete_budget,
     delete_week,
+    export_backup,
     fund_status,
     get_budgets,
     get_emergency_uses,
@@ -21,10 +22,12 @@ from db import (
     import_workbook,
     init_db,
     month_days,
+    restore_backup,
     upsert_budget,
     upsert_weekly_expenses,
     week_label,
 )
+from storage import StorageError, storage_status
 
 st.set_page_config(
     page_title="Student Expense Tracker",
@@ -56,7 +59,25 @@ div[data-baseweb="input"]>div,div[data-baseweb="select"]>div,textarea{background
     unsafe_allow_html=True,
 )
 
-init_db()
+def storage_call(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except StorageError as exc:
+        st.error(str(exc))
+        st.stop()
+
+
+storage_call(init_db)
+storage = storage_call(storage_status)
+if not storage["persistent"]:
+    st.warning(
+        "Local storage only: hosted Streamlit restarts can erase this data. "
+        "Connect a cloud database using the "
+        "[setup guide](https://github.com/Shaurya-S0603/Budget-Tracker#persistent-storage-on-streamlit-cloud). "
+        "Download a full backup from Weekly Update before changing storage."
+    )
+if notice := st.session_state.pop("save_notice", None):
+    st.success(notice)
 
 
 def money(value: float) -> str:
@@ -106,11 +127,12 @@ with st.sidebar:
     st.markdown(f"**Main fund:** {money(MAIN_FUND_LIMIT)}")
     st.markdown(f"**Emergency reserve:** {money(EMERGENCY_FUND_LIMIT)}")
     st.caption("SGD")
+    st.caption(str(storage["label"]))
 
-all_expenses = get_expenses()
+all_expenses = storage_call(get_expenses)
 cycle = current_cycle_expenses(all_expenses)
-budgets = get_budgets()
-emergency_uses = get_emergency_uses()
+budgets = storage_call(get_budgets)
+emergency_uses = storage_call(get_emergency_uses)
 total_spent = float(cycle["amount"].sum()) if not cycle.empty else 0.0
 fund = fund_status(total_spent)
 
@@ -371,7 +393,8 @@ elif page == "Weekly Update":
                 st.error("Enter a reason before using the Emergency Fund.")
             else:
                 try:
-                    result = upsert_weekly_expenses(
+                    result = storage_call(
+                        upsert_weekly_expenses,
                         week_ending,
                         amounts,
                         emergency_reason=emergency_reason,
@@ -387,12 +410,12 @@ elif page == "Weekly Update":
                             f" Emergency Fund currently covering "
                             f"{money(result['emergency_used'])}."
                         )
-                    st.success(message)
+                    st.session_state["save_notice"] = message
                     st.rerun()
 
     st.divider()
     st.markdown("### Recorded weeks")
-    history = get_weekly_totals()
+    history = storage_call(get_weekly_totals)
     if history.empty:
         st.caption("No weekly updates yet.")
     else:
@@ -415,7 +438,7 @@ elif page == "Weekly Update":
         with st.expander("Delete a week"):
             key = st.selectbox("Week", history["period_key"].tolist())
             if st.button("Delete selected week"):
-                delete_week(key)
+                storage_call(delete_week, key)
                 st.rerun()
 
     st.divider()
@@ -451,12 +474,38 @@ elif page == "Weekly Update":
     with d2:
         uploaded = st.file_uploader("Re-import workbook", type=["xlsx"])
         if uploaded is not None:
-            path = Path("data") / "uploaded_budget.xlsx"
-            path.write_bytes(uploaded.getbuffer())
             replace = st.checkbox("Replace existing spending first")
             if st.button("Import workbook", use_container_width=True):
-                result = import_workbook(path, replace=replace)
-                st.success(f"Imported {result['expenses_imported']} expense rows.")
+                try:
+                    result = storage_call(import_workbook, BytesIO(uploaded.getvalue()), replace=replace)
+                except (ValueError, OSError):
+                    st.error("Choose a valid budget workbook with a Transactions sheet.")
+                else:
+                    st.session_state["save_notice"] = f"Imported {result['expenses_imported']} expense rows."
+                    st.rerun()
+
+    with st.expander("Full backup and restore"):
+        st.caption("Includes all spending, category budgets and emergency-fund reasons.")
+        st.download_button(
+            "Download full backup",
+            storage_call(export_backup),
+            "budget_backup.json",
+            "application/json",
+            use_container_width=True,
+        )
+        backup = st.file_uploader("Restore a full backup", type=["json"])
+        replace_backup = st.checkbox("Replace all saved data with this backup")
+        if st.button("Restore backup", disabled=backup is None):
+            try:
+                result = storage_call(restore_backup, backup.getvalue(), replace=replace_backup)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                # Refill weekly inputs from the newly restored records.
+                for key in list(st.session_state):
+                    if isinstance(key, str) and len(key) > 8 and key[4:6] == "-W":
+                        del st.session_state[key]
+                st.session_state["save_notice"] = f"Restored {result['expenses']} expenses and their settings."
                 st.rerun()
 
 elif page == "Budgets":
@@ -529,7 +578,7 @@ elif page == "Budgets":
                 step=5.0,
             )
             if st.button("Save budget", type="primary", use_container_width=True):
-                upsert_budget(category, value)
+                storage_call(upsert_budget, category, value)
                 st.rerun()
 
     with right:
@@ -548,7 +597,7 @@ elif page == "Budgets":
             elif new_category.strip().casefold() == "emergency fund":
                 st.error("Emergency Fund is a reserve, not an expense category.")
             else:
-                upsert_budget(new_category.strip(), new_budget)
+                storage_call(upsert_budget, new_category.strip(), new_budget)
                 st.rerun()
 
     with st.expander("Delete category"):
@@ -559,7 +608,7 @@ elif page == "Budgets":
                 key="delete_category",
             )
             if st.button("Delete budget category"):
-                delete_budget(category)
+                storage_call(delete_budget, category)
                 st.rerun()
 
 elif page == "Insights":
