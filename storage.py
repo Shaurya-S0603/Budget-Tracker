@@ -110,6 +110,9 @@ def connect(*, write: bool = False):
                 elif engine.dialect.name == "postgresql":
                     # A backup's tables must all reflect the same committed state.
                     conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+                else:
+                    # sqlite3's legacy mode does not start a transaction for SELECT.
+                    conn.exec_driver_sql("BEGIN")
                 yield conn
     except SQLAlchemyError:
         raise StorageError(
