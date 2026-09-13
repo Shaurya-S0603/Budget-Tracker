@@ -59,6 +59,7 @@ div[data-baseweb="input"]>div,div[data-baseweb="select"]>div,textarea{background
     unsafe_allow_html=True,
 )
 
+
 def storage_call(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
@@ -70,22 +71,25 @@ def storage_call(function, *args, **kwargs):
 storage_call(init_db)
 storage = storage_call(storage_status)
 if not storage["persistent"]:
-    st.warning(
-        "Local storage only: hosted Streamlit restarts can erase this data. "
-        "Connect a cloud database using the "
-        "[setup guide](https://github.com/Shaurya-S0603/Budget-Tracker#persistent-storage-on-streamlit-cloud). "
-        "Download a full backup from Weekly Update before changing storage."
-    )
+    st.warning(str(storage.get("message") or "GitHub autosave is unavailable."))
 if notice := st.session_state.pop("save_notice", None):
     st.success(notice)
 
 
 def money(value: float) -> str:
+    """Markdown-safe Singapore dollar text."""
     sign = "-" if value < 0 else ""
-    return f"{sign}S${abs(value):,.2f}"
+    return f"{sign}S\\${abs(value):,.2f}"
+
+
+def money_plain(value: float) -> str:
+    """Plain currency text for widgets that do not parse Markdown."""
+    return money(value).replace(r"\$", "$")
 
 
 def kpi(label: str, value: str, hint: str = "", state: str = "") -> None:
+    value = value.replace(r"\$", "$")
+    hint = hint.replace(r"\$", "$")
     st.markdown(
         f'<div class="kpi {state}"><div class="label">{label}</div>'
         f'<div class="value">{value}</div><div class="hint">{hint}</div></div>',
@@ -189,7 +193,7 @@ if page == "Dashboard":
 
     if fund["over_total_funds"] > 0:
         st.error(
-            f"Spending is {money(fund['over_total_funds'])} above the full S$1,000 available."
+            f"Spending is {money(fund['over_total_funds'])} above the full S\\$1,000 available."
         )
     elif fund["emergency_used"] > 0:
         st.warning(
@@ -205,17 +209,17 @@ if page == "Dashboard":
     with x:
         st.metric(
             "Projected month spend",
-            money(projected),
+            money_plain(projected),
             (
-                f"{money(projected - MAIN_FUND_LIMIT)} beyond main fund"
+                f"{money_plain(projected - MAIN_FUND_LIMIT)} beyond main fund"
                 if projected > MAIN_FUND_LIMIT
-                else f"{money(MAIN_FUND_LIMIT - projected)} below main fund"
+                else f"{money_plain(MAIN_FUND_LIMIT - projected)} below main fund"
             ),
         )
     with y:
         st.metric(
             "Projected emergency use",
-            money(projected_fund["emergency_used"]),
+            money_plain(projected_fund["emergency_used"]),
             "reserve touched" if projected_fund["emergency_used"] else "reserve untouched",
         )
 
@@ -225,7 +229,7 @@ if page == "Dashboard":
         if reasons.empty:
             st.error(
                 "No reason is recorded. Re-save the weekly update that pushed the "
-                "month above S$800."
+                "month above S\\$800."
             )
         else:
             st.dataframe(
@@ -374,7 +378,7 @@ elif page == "Weekly Update":
         if preview["emergency_used"] > 0:
             st.warning(
                 f"This leaves the month {money(max(prospective_total - MAIN_FUND_LIMIT, 0))} "
-                f"above the S$800 main fund. {money(preview['emergency_used'])} "
+                f"above the S\\$800 main fund. {money(preview['emergency_used'])} "
                 f"will be funded from the Emergency Fund."
             )
             emergency_reason = st.text_area(
@@ -384,7 +388,7 @@ elif page == "Weekly Update":
             )
             if preview["over_total_funds"] > 0:
                 st.error(
-                    f"This also exceeds the full S$1,000 available by "
+                    f"This also exceeds the full S\\$1,000 available by "
                     f"{money(preview['over_total_funds'])}."
                 )
 
@@ -511,27 +515,27 @@ elif page == "Weekly Update":
 elif page == "Budgets":
     st.title("Budgets")
     st.caption(
-        "Category allocations are inside the fixed S$800 main fund. "
+        "Category allocations are inside the fixed S\\$800 main fund. "
         "Emergency Fund is separate."
     )
 
     allocated = sum(budgets.values())
     a, b = st.columns(2)
     with a:
-        st.metric("Main monthly fund", money(MAIN_FUND_LIMIT), "fixed")
+        st.metric("Main monthly fund", money_plain(MAIN_FUND_LIMIT), "fixed")
     with b:
         st.metric(
             "Category allocations",
-            money(allocated),
+            money_plain(allocated),
             (
                 "fully allocated"
                 if allocated == MAIN_FUND_LIMIT
-                else f"{money(abs(MAIN_FUND_LIMIT - allocated))} "
+                else f"{money_plain(abs(MAIN_FUND_LIMIT - allocated))} "
                 f"{'over' if allocated > MAIN_FUND_LIMIT else 'unallocated'}"
             ),
         )
     if allocated > MAIN_FUND_LIMIT:
-        st.warning("Category allocations exceed S$800. The main fund is still capped at S$800.")
+        st.warning("Category allocations exceed S\\$800. The main fund is still capped at S\\$800.")
 
     spent = (
         cycle.groupby("category")["amount"].sum().to_dict()
@@ -629,18 +633,18 @@ elif page == "Insights":
 
         a, b, c = st.columns(3)
         with a:
-            st.metric("Top category", top.index[0], money(float(top.iloc[0])))
+            st.metric("Top category", top.index[0], money_plain(float(top.iloc[0])))
         with b:
-            st.metric("Average recorded week", money(float(weekly_avg)))
+            st.metric("Average recorded week", money_plain(float(weekly_avg)))
         with c:
             st.metric(
                 "Projected emergency use",
-                money(projected_fund["emergency_used"]),
+                money_plain(projected_fund["emergency_used"]),
             )
 
         if projected_fund["over_total_funds"] > 0:
             st.error(
-                f"At this pace you exceed all S$1,000 by "
+                f"At this pace you exceed all S\\$1,000 by "
                 f"{money(projected_fund['over_total_funds'])}."
             )
         elif projected_fund["emergency_used"] > 0:
